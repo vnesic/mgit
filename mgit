@@ -1,0 +1,699 @@
+#!/usr/bin/env python3
+"""
+mgit - Multi-repository Git operations tool with parallel execution
+A robust replacement for 'repo forall' that works with independent Git repositories.
+"""
+
+import os
+import sys
+import subprocess
+import argparse
+import json
+from pathlib import Path
+from typing import List, Dict, Tuple, Optional, Set
+from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+import time
+
+
+@dataclass
+class RepoInfo:
+    """Information about a discovered Git repository."""
+    path: Path
+    relative_path: str
+    is_dirty: bool = False
+    has_staged: bool = False
+    has_unstaged: bool = False
+    has_untracked: bool = False
+    
+    @property
+    def abs_path(self) -> str:
+        return str(self.path.resolve())
+
+
+@dataclass
+class ExecutionResult:
+    """Result of executing a command in a repository."""
+    repo: RepoInfo
+    success: bool
+    output: str
+    error: str
+    return_code: int
+    commit_sha: Optional[str] = None
+    duration: float = 0.0
+
+
+class MGit:
+    """Main mgit controller class with parallel execution support."""
+    
+    DEFAULT_SKIP_DIRS = {
+        '.repo', 'out', '.git', 'build', 'bazel-out', 
+        '.gradle', '.idea', '.vscode', 'node_modules',
+        '__pycache__', '.pytest_cache', 'venv', '.tox'
+    }
+    
+    def __init__(self, root_dir: Path = None, skip_dirs: Set[str] = None, 
+                 dry_run: bool = False, jobs: int = 4):
+        self.root_dir = root_dir or Path.cwd()
+        self.skip_dirs = skip_dirs or self.DEFAULT_SKIP_DIRS.copy()
+        self.dry_run = dry_run
+        self.jobs = max(1, jobs)  # At least 1 job
+        self.repos: List[RepoInfo] = []
+        self._print_lock = threading.Lock()
+        
+    def discover_repos(self) -> List[RepoInfo]:
+        """Recursively discover all Git repositories under root_dir."""
+        repos = []
+        
+        for dirpath, dirnames, filenames in os.walk(self.root_dir):
+            current_path = Path(dirpath)
+            
+            # Check if current directory is a git repo
+            git_path = current_path / '.git'
+            if git_path.exists():
+                # .git can be a file (submodule/worktree) or directory
+                relative = current_path.relative_to(self.root_dir)
+                repo_info = RepoInfo(
+                    path=current_path,
+                    relative_path=str(relative) if str(relative) != '.' else '.'
+                )
+                repos.append(repo_info)
+                
+                # Don't traverse into this repo's subdirectories
+                dirnames[:] = []
+                continue
+            
+            # Filter out skip directories
+            dirnames[:] = [d for d in dirnames if d not in self.skip_dirs]
+        
+        self.repos = sorted(repos, key=lambda r: r.relative_path)
+        return self.repos
+    
+    def _update_repo_status_worker(self, repo: RepoInfo, check_untracked: bool = True) -> RepoInfo:
+        """Update repository status information (worker function for parallel execution)."""
+        try:
+            # Use porcelain format for reliable parsing
+            result = subprocess.run(
+                ['git', 'status', '--porcelain'],
+                cwd=repo.path,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if result.returncode != 0:
+                return repo
+            
+            lines = result.stdout.strip().split('\n') if result.stdout.strip() else []
+            
+            for line in lines:
+                if not line:
+                    continue
+                    
+                status_code = line[:2]
+                
+                # Check for staged changes (first character)
+                if status_code[0] not in (' ', '?'):
+                    repo.has_staged = True
+                
+                # Check for unstaged changes (second character)
+                if status_code[1] not in (' ', '?'):
+                    repo.has_unstaged = True
+                
+                # Check for untracked files
+                if status_code == '??':
+                    repo.has_untracked = True
+            
+            repo.is_dirty = repo.has_staged or repo.has_unstaged
+            if check_untracked:
+                repo.is_dirty = repo.is_dirty or repo.has_untracked
+                
+        except (subprocess.TimeoutExpired, subprocess.SubprocessError) as e:
+            with self._print_lock:
+                print(f"Warning: Failed to get status for {repo.relative_path}: {e}", file=sys.stderr)
+        
+        return repo
+    
+    def update_repos_status_parallel(self, check_untracked: bool = True) -> List[RepoInfo]:
+        """Update status for all repos in parallel."""
+        with ThreadPoolExecutor(max_workers=self.jobs) as executor:
+            futures = {
+                executor.submit(self._update_repo_status_worker, repo, check_untracked): repo
+                for repo in self.repos
+            }
+            
+            updated_repos = []
+            for future in as_completed(futures):
+                try:
+                    updated_repo = future.result()
+                    updated_repos.append(updated_repo)
+                except Exception as e:
+                    repo = futures[future]
+                    with self._print_lock:
+                        print(f"Error updating {repo.relative_path}: {e}", file=sys.stderr)
+        
+        # Return in original order
+        return sorted(updated_repos, key=lambda r: r.relative_path)
+    
+    def run_git_command(self, repo: RepoInfo, args: List[str], 
+                       capture_output: bool = True, timeout: int = 30) -> ExecutionResult:
+        """Run a git command in a specific repository."""
+        cmd = ['git'] + args
+        start_time = time.time()
+        
+        if self.dry_run:
+            return ExecutionResult(
+                repo=repo,
+                success=True,
+                output=f"[DRY RUN] Would execute: {' '.join(cmd)}",
+                error="",
+                return_code=0,
+                duration=0.0
+            )
+        
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=repo.path,
+                capture_output=capture_output,
+                text=True,
+                timeout=timeout
+            )
+            
+            duration = time.time() - start_time
+            
+            return ExecutionResult(
+                repo=repo,
+                success=result.returncode == 0,
+                output=result.stdout,
+                error=result.stderr,
+                return_code=result.returncode,
+                duration=duration
+            )
+        except subprocess.TimeoutExpired:
+            duration = time.time() - start_time
+            return ExecutionResult(
+                repo=repo,
+                success=False,
+                output="",
+                error=f"Command timed out after {timeout}s",
+                return_code=-1,
+                duration=duration
+            )
+        except Exception as e:
+            duration = time.time() - start_time
+            return ExecutionResult(
+                repo=repo,
+                success=False,
+                output="",
+                error=str(e),
+                return_code=-1,
+                duration=duration
+            )
+    
+    def _run_parallel_worker(self, repo: RepoInfo, args: List[str], timeout: int) -> ExecutionResult:
+        """Worker function for parallel git command execution."""
+        return self.run_git_command(repo, args, timeout=timeout)
+    
+    def run_parallel(self, repos: List[RepoInfo], args: List[str], 
+                    timeout: int = 30, show_progress: bool = False) -> List[ExecutionResult]:
+        """Run git command in parallel across multiple repos."""
+        results = []
+        total = len(repos)
+        completed = 0
+        
+        with ThreadPoolExecutor(max_workers=self.jobs) as executor:
+            futures = {
+                executor.submit(self._run_parallel_worker, repo, args, timeout): repo
+                for repo in repos
+            }
+            
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                    results.append(result)
+                    completed += 1
+                    
+                    if show_progress:
+                        with self._print_lock:
+                            print(f"\rProgress: {completed}/{total} repos processed", 
+                                  end='', file=sys.stderr)
+                except Exception as e:
+                    repo = futures[future]
+                    with self._print_lock:
+                        print(f"\nError processing {repo.relative_path}: {e}", file=sys.stderr)
+                    completed += 1
+        
+        if show_progress:
+            print("", file=sys.stderr)  # New line after progress
+        
+        # Sort results by repo path to maintain consistent output order
+        return sorted(results, key=lambda r: r.repo.relative_path)
+    
+    def cmd_status(self, dirty_only: bool = False, check_untracked: bool = True) -> int:
+        """Execute 'mgit status' command with parallel execution."""
+        if not self.repos:
+            print("No Git repositories found.", file=sys.stderr)
+            return 1
+        
+        # Update status in parallel
+        start_time = time.time()
+        self.repos = self.update_repos_status_parallel(check_untracked)
+        duration = time.time() - start_time
+        
+        displayed = 0
+        for repo in self.repos:
+            if dirty_only and not repo.is_dirty:
+                continue
+            
+            print(f"\nproject: {repo.relative_path}")
+            result = self.run_git_command(repo, ['status', '--porcelain'])
+            
+            if result.output:
+                print(result.output.rstrip())
+            else:
+                print(" (clean)")
+            
+            displayed += 1
+        
+        if displayed == 0 and dirty_only:
+            print("\nNo dirty repositories found.")
+        
+        # Show performance stats if using parallel execution
+        if self.jobs > 1:
+            print(f"\n[Processed {len(self.repos)} repos in {duration:.2f}s using {self.jobs} jobs]", 
+                  file=sys.stderr)
+        
+        return 0
+    
+    def cmd_log(self, git_args: List[str]) -> int:
+        """Execute 'mgit log' command with parallel execution."""
+        if not self.repos:
+            print("No Git repositories found.", file=sys.stderr)
+            return 1
+        
+        # Run in parallel
+        results = self.run_parallel(self.repos, ['log'] + git_args, 
+                                   timeout=30, show_progress=self.jobs > 1)
+        
+        failures = []
+        for result in results:
+            print(f"\nproject: {result.repo.relative_path}")
+            
+            if result.success:
+                print(result.output.rstrip())
+            else:
+                print(f"ERROR: {result.error}", file=sys.stderr)
+                failures.append(result.repo.relative_path)
+        
+        if failures:
+            print(f"\n{len(failures)} repositories had errors.", file=sys.stderr)
+        
+        return 0
+    
+    def cmd_diff(self, git_args: List[str]) -> int:
+        """Execute 'mgit diff' command with parallel execution."""
+        if not self.repos:
+            print("No Git repositories found.", file=sys.stderr)
+            return 1
+        
+        # Run in parallel
+        results = self.run_parallel(self.repos, ['diff'] + git_args,
+                                   timeout=30, show_progress=self.jobs > 1)
+        
+        failures = []
+        for result in results:
+            if result.success and result.output.strip():
+                print(f"\nproject: {result.repo.relative_path}")
+                print(result.output.rstrip())
+            elif not result.success:
+                print(f"\nproject: {result.repo.relative_path}", file=sys.stderr)
+                print(f"ERROR: {result.error}", file=sys.stderr)
+                failures.append(result.repo.relative_path)
+        
+        if failures:
+            print(f"\n{len(failures)} repositories had errors.", file=sys.stderr)
+        
+        return 0
+    
+    def cmd_checkout(self, ref: str) -> int:
+        """Execute 'mgit checkout' command."""
+        if not self.repos:
+            print("No Git repositories found.", file=sys.stderr)
+            return 1
+        
+        # Checkout is potentially destructive, show each result immediately
+        # But still use parallel execution for speed
+        results = self.run_parallel(self.repos, ['checkout', ref],
+                                   timeout=30, show_progress=self.jobs > 1)
+        
+        failures = []
+        for result in results:
+            print(f"\nproject: {result.repo.relative_path}")
+            
+            if result.success:
+                print(result.output.rstrip() or f"Switched to '{ref}'")
+            else:
+                print(f"ERROR: {result.error}", file=sys.stderr)
+                failures.append(result.repo.relative_path)
+        
+        if failures:
+            print(f"\n{len(failures)} repositories failed to checkout.", file=sys.stderr)
+            return 0  # Soft failure
+        
+        return 0
+    
+    def cmd_exec(self, git_args: List[str]) -> int:
+        """Execute arbitrary git command across all repos with parallel execution."""
+        if not self.repos:
+            print("No Git repositories found.", file=sys.stderr)
+            return 1
+        
+        if not git_args:
+            print("ERROR: No git command specified after 'exec --'", file=sys.stderr)
+            return 2
+        
+        # Run in parallel
+        results = self.run_parallel(self.repos, git_args,
+                                   timeout=30, show_progress=self.jobs > 1)
+        
+        failures = []
+        for result in results:
+            print(f"\nproject: {result.repo.relative_path}")
+            
+            if result.output:
+                print(result.output.rstrip())
+            if result.error:
+                print(result.error.rstrip(), file=sys.stderr)
+            
+            if not result.success:
+                failures.append(result.repo.relative_path)
+        
+        if failures:
+            print(f"\n{len(failures)} repositories had errors.", file=sys.stderr)
+        
+        return 0
+    
+    def cmd_commit(self, message: str, add_all: bool = False, amend: bool = False,
+                   no_verify: bool = False, push: bool = False, 
+                   push_remote: Optional[str] = None, push_branch: Optional[str] = None,
+                   link_file: Optional[str] = None, meta_repo: Optional[str] = None) -> int:
+        """Execute multi-repo commit operation (sequential for safety)."""
+        if not self.repos:
+            print("No Git repositories found.", file=sys.stderr)
+            return 1
+        
+        # Update status in parallel first
+        self.repos = self.update_repos_status_parallel(check_untracked=False)
+        
+        dirty_repos = []
+        for repo in self.repos:
+            if repo.is_dirty or add_all:
+                dirty_repos.append(repo)
+        
+        if not dirty_repos:
+            print("No repositories with changes to commit.")
+            return 0
+        
+        print(f"Found {len(dirty_repos)} repositories with changes.\n")
+        
+        commit_results: Dict[str, str] = {}  # path -> sha
+        failures = []
+        
+        # Commit operations should be sequential for safety and clear output
+        for repo in dirty_repos:
+            print(f"project: {repo.relative_path}")
+            
+            # Stage all changes if requested
+            if add_all:
+                add_result = self.run_git_command(repo, ['add', '-A'])
+                if not add_result.success:
+                    print(f"  ERROR adding files: {add_result.error}", file=sys.stderr)
+                    failures.append(repo.relative_path)
+                    continue
+            
+            # Check if there's anything to commit after staging
+            status_check = self.run_git_command(repo, ['status', '--porcelain'])
+            if not status_check.success:
+                print(f"  ERROR checking status: {status_check.error}", file=sys.stderr)
+                failures.append(repo.relative_path)
+                continue
+            
+            # Parse staged changes
+            has_staged_changes = any(
+                line and line[0] not in (' ', '?') 
+                for line in status_check.output.split('\n')
+            )
+            
+            if not has_staged_changes and not amend:
+                print("  (no staged changes, skipping)")
+                continue
+            
+            # Build commit command
+            commit_cmd = ['commit', '-m', message]
+            if amend:
+                commit_cmd.append('--amend')
+            if no_verify:
+                commit_cmd.append('--no-verify')
+            
+            commit_result = self.run_git_command(repo, commit_cmd)
+            
+            if commit_result.success:
+                # Get the commit SHA
+                sha_result = self.run_git_command(repo, ['rev-parse', 'HEAD'])
+                if sha_result.success:
+                    commit_sha = sha_result.output.strip()
+                    commit_results[repo.relative_path] = commit_sha
+                    print(f"  ✓ Committed: {commit_sha[:8]}")
+                else:
+                    print(f"  ✓ Committed (SHA unknown)")
+            else:
+                print(f"  ERROR: {commit_result.error}", file=sys.stderr)
+                failures.append(repo.relative_path)
+                continue
+            
+            # Push if requested (can be slow, so show individual progress)
+            if push:
+                push_cmd = ['push']
+                if push_remote:
+                    push_cmd.append(push_remote)
+                if push_branch:
+                    push_cmd.append(push_branch)
+                
+                push_result = self.run_git_command(repo, push_cmd, timeout=60)
+                if push_result.success:
+                    print(f"  ✓ Pushed")
+                else:
+                    print(f"  ERROR pushing: {push_result.error}", file=sys.stderr)
+        
+        # Write link file if requested
+        if link_file and commit_results:
+            self._write_link_file(link_file, commit_results)
+        
+        # Handle meta repo if requested
+        if meta_repo and link_file and commit_results:
+            self._update_meta_repo(meta_repo, link_file, message)
+        
+        # Summary
+        print(f"\n{'='*60}")
+        print(f"Committed: {len(commit_results)} repositories")
+        if failures:
+            print(f"Failed: {len(failures)} repositories")
+            print("Failed repos:", ', '.join(failures))
+        
+        return 0
+    
+    def _write_link_file(self, link_file: str, commit_results: Dict[str, str]) -> None:
+        """Write commit mapping to link file."""
+        try:
+            link_path = Path(link_file).resolve()
+            link_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(link_path, 'w') as f:
+                for repo_path in sorted(commit_results.keys()):
+                    sha = commit_results[repo_path]
+                    f.write(f"{repo_path} {sha}\n")
+            
+            print(f"\n✓ Link file written: {link_file}")
+        except Exception as e:
+            print(f"\nERROR writing link file: {e}", file=sys.stderr)
+    
+    def _update_meta_repo(self, meta_repo: str, link_file: str, message: str) -> None:
+        """Update meta repository with link file."""
+        try:
+            meta_path = Path(meta_repo).resolve()
+            meta_path.mkdir(parents=True, exist_ok=True)
+            
+            # Initialize git repo if needed
+            git_dir = meta_path / '.git'
+            if not git_dir.exists():
+                subprocess.run(['git', 'init'], cwd=meta_path, check=True, capture_output=True)
+                print(f"✓ Initialized meta repo: {meta_repo}")
+            
+            # Copy link file to meta repo
+            link_src = Path(link_file).resolve()
+            link_dst = meta_path / link_src.name
+            
+            import shutil
+            shutil.copy2(link_src, link_dst)
+            
+            # Stage and commit
+            subprocess.run(['git', 'add', link_dst.name], cwd=meta_path, check=True, capture_output=True)
+            subprocess.run(['git', 'commit', '-m', message], cwd=meta_path, check=True, capture_output=True)
+            
+            # Get meta commit SHA
+            result = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=meta_path, 
+                                  check=True, capture_output=True, text=True)
+            meta_sha = result.stdout.strip()
+            
+            print(f"✓ Meta repo updated: {meta_sha[:8]}")
+            
+        except subprocess.CalledProcessError as e:
+            print(f"\nERROR updating meta repo: {e}", file=sys.stderr)
+        except Exception as e:
+            print(f"\nERROR with meta repo: {e}", file=sys.stderr)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='mgit - Multi-repository Git operations tool with parallel execution',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  mgit status                          # Show status of all repos
+  mgit status --dirty -j8              # Show dirty repos using 8 parallel jobs
+  mgit log -n 5 --oneline -j10        # Show last 5 commits (10 parallel jobs)
+  mgit diff HEAD~1 -j12               # Show diff (12 parallel jobs)
+  mgit checkout develop               # Checkout 'develop' in all repos
+  mgit exec -- fetch --all -j16       # Fetch all repos (16 parallel jobs)
+  mgit commit -m "Fix" --add --push   # Commit and push all changes
+  
+  # Advanced: Track multi-repo changes
+  mgit commit -m "Update deps" --add \\
+    --link-file changes.txt \\
+    --meta-repo .meta-repo
+
+Performance Tips:
+  - Use -j with number of CPU cores for best performance
+  - For 50 repos: -j8 to -j16 recommended
+  - For 200+ repos: -j16 to -j32 recommended
+  - Default is -j4 (safe for most systems)
+        '''
+    )
+    
+    parser.add_argument('-j', '--jobs', type=int, default=4, metavar='N',
+                       help='Number of parallel jobs (default: 4, like repo -jN)')
+    parser.add_argument('--skip-dir', action='append', dest='skip_dirs',
+                       help='Additional directories to skip (can be used multiple times)')
+    parser.add_argument('--dry-run', action='store_true',
+                       help='Show what would be done without executing')
+    
+    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+    
+    # status command
+    status_parser = subparsers.add_parser('status', help='Show repository status')
+    status_parser.add_argument('--dirty', action='store_true',
+                              help='Show only repositories with changes')
+    status_parser.add_argument('--no-untracked', action='store_true',
+                              help='Do not consider untracked files as dirty')
+    
+    # log command
+    log_parser = subparsers.add_parser('log', help='Show commit logs')
+    log_parser.add_argument('args', nargs='*', help='Arguments to pass to git log')
+    
+    # diff command
+    diff_parser = subparsers.add_parser('diff', help='Show differences')
+    diff_parser.add_argument('args', nargs='*', help='Arguments to pass to git diff')
+    
+    # checkout command
+    checkout_parser = subparsers.add_parser('checkout', help='Checkout a ref in all repos')
+    checkout_parser.add_argument('ref', help='Branch, tag, or commit to checkout')
+    
+    # exec command
+    exec_parser = subparsers.add_parser('exec', help='Execute arbitrary git command')
+    exec_parser.add_argument('args', nargs='+', help='Git command and arguments')
+    
+    # commit command
+    commit_parser = subparsers.add_parser('commit', help='Commit changes in all dirty repos')
+    commit_parser.add_argument('-m', '--message', required=True, help='Commit message')
+    commit_parser.add_argument('--add', action='store_true',
+                              help='Stage all changes before committing (git add -A)')
+    commit_parser.add_argument('--amend', action='store_true',
+                              help='Amend previous commit')
+    commit_parser.add_argument('--no-verify', action='store_true',
+                              help='Bypass pre-commit hooks')
+    commit_parser.add_argument('--push', action='store_true',
+                              help='Push after committing')
+    commit_parser.add_argument('--push-remote', help='Remote to push to (default: origin)')
+    commit_parser.add_argument('--push-branch', help='Branch to push to (default: current)')
+    commit_parser.add_argument('--link-file', help='Write repo->SHA mappings to file')
+    commit_parser.add_argument('--meta-repo', help='Maintain a meta repo tracking the link file')
+    
+    args = parser.parse_args()
+    
+    if not args.command:
+        parser.print_help()
+        return 1
+    
+    # Build skip dirs set
+    skip_dirs = MGit.DEFAULT_SKIP_DIRS.copy()
+    if args.skip_dirs:
+        skip_dirs.update(args.skip_dirs)
+    
+    # Create mgit instance with parallel execution support
+    mgit = MGit(skip_dirs=skip_dirs, dry_run=args.dry_run, jobs=args.jobs)
+    
+    # Discover repositories
+    print(f"Scanning for Git repositories from {mgit.root_dir}...", file=sys.stderr)
+    repos = mgit.discover_repos()
+    print(f"Found {len(repos)} repositories.", file=sys.stderr)
+    
+    if args.jobs > 1:
+        print(f"Using {args.jobs} parallel jobs for execution.", file=sys.stderr)
+    
+    if not repos:
+        print("No Git repositories found.", file=sys.stderr)
+        return 1
+    
+    # Execute command
+    try:
+        if args.command == 'status':
+            return mgit.cmd_status(
+                dirty_only=args.dirty,
+                check_untracked=not args.no_untracked
+            )
+        elif args.command == 'log':
+            return mgit.cmd_log(args.args)
+        elif args.command == 'diff':
+            return mgit.cmd_diff(args.args)
+        elif args.command == 'checkout':
+            return mgit.cmd_checkout(args.ref)
+        elif args.command == 'exec':
+            return mgit.cmd_exec(args.args)
+        elif args.command == 'commit':
+            return mgit.cmd_commit(
+                message=args.message,
+                add_all=args.add,
+                amend=args.amend,
+                no_verify=args.no_verify,
+                push=args.push,
+                push_remote=args.push_remote,
+                push_branch=args.push_branch,
+                link_file=args.link_file,
+                meta_repo=args.meta_repo
+            )
+    except KeyboardInterrupt:
+        print("\n\nInterrupted by user.", file=sys.stderr)
+        return 130
+    except Exception as e:
+        print(f"\nFATAL ERROR: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        return 1
+    
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
