@@ -46,7 +46,7 @@ mgit --help
 
 ```bash
 # Download the package directly
-wget https://github.com/vnesic/mgit/raw/main/mgit_1.1.0_all.deb
+wget https://github.com/vnesic/mgit/blob/main/raw/main/mgit_1.1.0_all.deb 
 
 # Install
 sudo dpkg -i mgit_1.1.0_all.deb
@@ -56,7 +56,7 @@ sudo dpkg -i mgit_1.1.0_all.deb
 
 ```bash
 # Download just the script
-wget [https://github.com/vnesic/mgit/blob/main/raw/main/mgit_1.1.0_all.deb]
+wget https://github.com/vnesic/mgit/blob/main/raw/main/mgit_1.1.0_all.deb
 sudo cp mgit /usr/local/bin/
 sudo chmod +x /usr/local/bin/mgit
 ```
