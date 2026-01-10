@@ -6,11 +6,37 @@ Get up and running with `mgit` in 5 minutes.
 
 ## 1. Install
 
+### From GitHub Repository
+
 ```bash
+# Clone this repository
+git clone https://github.com/vnesic/mgit.git
+cd mgit
+
+# Install the Debian package
 sudo dpkg -i mgit_1.1.0_all.deb
 ```
 
-**Verify:**
+### Direct Download
+
+```bash
+# Download package directly
+wget https://github.com/vnesic/mgit/raw/main/mgit_1.1.0_all.deb
+
+# Install
+sudo dpkg -i mgit_1.1.0_all.deb
+```
+
+### Manual Install (Script Only)
+
+```bash
+# Download just the executable
+wget https://github.com/vnesic/mgit/raw/main/mgit
+sudo cp mgit /usr/local/bin/
+sudo chmod +x /usr/local/bin/mgit
+```
+
+**Verify installation:**
 ```bash
 mgit --help
 ```
@@ -72,7 +98,7 @@ mgit status --dirty -j8
 mgit exec -- fetch --all -j16
 ```
 
-**Time:** ~18s for 50 repos (vs ~125s sequential)
+**Result:** ~18s for 50 repos (vs ~125s sequential) = **6.6x faster**
 
 ### Show Recent Commits
 
@@ -96,9 +122,9 @@ mgit commit -m "Update dependencies" --add --push
 ```
 
 **What happens:**
-1. Stages all changes in dirty repos
+1. Stages all changes in dirty repos (`--add`)
 2. Creates commit with same message
-3. Pushes to remote
+3. Pushes to remote (`--push`)
 4. Shows commit SHA for each repo
 
 **Output:**
@@ -119,9 +145,9 @@ Committed: 2 repositories
 
 ---
 
-## 6. Performance Comparison
+## 6. See the Speed Difference
 
-Try it yourself:
+Compare sequential vs parallel:
 
 ```bash
 # Sequential (slow)
@@ -131,13 +157,13 @@ time mgit status --dirty -j1
 time mgit status --dirty -j8
 ```
 
-**Result:** 4-6x faster with `-j8`!
+**Typical result:** 4-6x faster with `-j8`!
 
 ---
 
-## Quick Reference
+## Essential Commands
 
-### Essential Commands
+### Quick Reference
 
 ```bash
 # Status
@@ -169,6 +195,9 @@ mgit exec -- branch -vv -j8
 20-100 repos:  -j8   ← Start here
 100-200 repos: -j16
 200+ repos:    -j32
+
+# Auto-detect CPU cores
+mgit status -j$(nproc)
 ```
 
 ---
@@ -212,7 +241,7 @@ alias mf='mgit exec -- fetch --all -j16'
 alias ml='mgit log -n 5 --oneline -j8'
 ```
 
-Usage:
+Then use:
 ```bash
 ms   # Quick status
 mf   # Quick fetch
@@ -221,13 +250,13 @@ ml   # Quick log
 
 ### 2. Use Dry Run
 
-Before destructive operations:
+Test before executing:
 
 ```bash
 mgit --dry-run commit -m "Test" --add --push
 ```
 
-### 3. Check Before Commit
+### 3. Always Check Before Commit
 
 ```bash
 mgit status --dirty -j8
@@ -242,18 +271,22 @@ mgit commit -m "Update" --add
 ### Read Full Documentation
 
 ```bash
+# Man page (after installation)
 man mgit
-cat /usr/share/doc/mgit/README.md
+
+# Full README
+cat README.md
+
+# Documentation (after installation)
+ls /usr/share/doc/mgit/
 ```
 
-### Learn Advanced Features
+### Advanced Features
 
 - **Link files:** Track multi-repo changes
 - **Meta repos:** Maintain release history
 - **Custom skip dirs:** Filter discovery
 - **Performance tuning:** Optimize -j values
-
-See: `/usr/share/doc/mgit/USAGE_EXAMPLES.md`
 
 ---
 
@@ -262,22 +295,33 @@ See: `/usr/share/doc/mgit/USAGE_EXAMPLES.md`
 ### Command not found
 
 ```bash
+# Check installation
 which mgit
+
+# If not found, add to PATH
 export PATH="/usr/local/bin:$PATH"
 ```
 
 ### No repos found
 
 ```bash
-pwd  # Check you're in the right directory
-find . -name .git -type d  # List git repos
+# Check directory
+pwd
+
+# List git repos manually
+find . -name .git -type d
 ```
 
 ### -j flag not working
 
 ```bash
-mgit --help | grep jobs  # Verify v1.1.0
-sudo dpkg -i mgit_1.1.0_all.deb  # Reinstall if needed
+# Verify version
+mgit --help | grep jobs
+
+# Should show: -j, --jobs N
+
+# If not, reinstall
+sudo dpkg -i mgit_1.1.0_all.deb
 ```
 
 ---
@@ -292,9 +336,20 @@ sudo dpkg -i mgit_1.1.0_all.deb  # Reinstall if needed
 
 ## Summary
 
-1. **Install:** `sudo dpkg -i mgit_1.1.0_all.deb`
+**3 steps to get started:**
+
+1. **Install:** Clone repo and `sudo dpkg -i mgit_1.1.0_all.deb`
 2. **Navigate:** `cd ~/your-project`
 3. **Run:** `mgit status --dirty -j8`
-4. **Enjoy:** 4-6x faster operations!
 
-🚀 **You're ready to go!**
+**Result:** 4-6x faster multi-repo operations! 🚀
+
+---
+
+**Quick install:**
+
+```bash
+git clone https://github.com/vnesic/mgit.git && cd mgit && sudo dpkg -i mgit_1.1.0_all.deb
+```
+
+**You're ready to go!** ✨

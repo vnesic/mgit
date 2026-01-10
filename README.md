@@ -5,23 +5,22 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/vnesic/mgit)
 
+Multi-repository Git operations tool with parallel execution support. Perfect for AOSP development, microservices, and managing multiple independent Git repositories.
+
 **Author:** Vladimir Nesic  
 **Email:** vladimirs.nesic@gmail.com  
 **GitHub:** https://github.com/vnesic/mgit
 
 ---
 
-## What is mgit?
+## Features
 
-`mgit` is a powerful command-line tool designed to manage multiple independent Git repositories simultaneously. It's perfect for AOSP development, microservices architectures, and any workflow involving many repos.
-
-**Key Features:**
-- 🚀 **Parallel execution** with `-j` flag - 4-6x faster!
-- 📦 **Multi-repo commits** - Same message across all repos
-- 🔍 **Smart discovery** - Automatically finds all Git repositories
-- 🔗 **Change tracking** - Link files and meta-repos for releases
+- 🚀 **Parallel execution** - 4-6x faster with `-j` flag
+- 📦 **Multi-repo commits** - Same message across all repositories
+- 🔍 **Smart discovery** - Automatic Git repository detection
+- 🔗 **Change tracking** - Link files for reproducible builds
 - 🛡️ **Thread-safe** - Proper locking and grouped output
-- ⚡ **No dependencies** - Just Python 3.6+ and Git
+- ⚡ **Zero dependencies** - Just Python 3.6+ and Git
 
 ---
 
@@ -29,12 +28,37 @@
 
 ### Installation
 
+**Option 1: Install from this repository**
+
 ```bash
-# Download and install
+# Clone the repository
+git clone https://github.com/vnesic/mgit.git
+cd mgit
+
+# Install the Debian package
 sudo dpkg -i mgit_1.1.0_all.deb
 
 # Verify installation
 mgit --help
+```
+
+**Option 2: Direct download**
+
+```bash
+# Download the package directly
+wget https://github.com/vnesic/mgit/raw/main/mgit_1.1.0_all.deb
+
+# Install
+sudo dpkg -i mgit_1.1.0_all.deb
+```
+
+**Option 3: Manual installation (script only)**
+
+```bash
+# Download just the script
+wget https://github.com/vnesic/mgit/raw/main/mgit
+sudo cp mgit /usr/local/bin/
+sudo chmod +x /usr/local/bin/mgit
 ```
 
 ### First Commands
@@ -43,23 +67,21 @@ mgit --help
 # Navigate to your multi-repo workspace
 cd ~/your-project
 
-# Show status of all repos (parallel)
-mgit status -j8
-
-# Show only dirty repos
+# Show status with parallel execution
 mgit status --dirty -j8
 
-# Commit all changes with same message
+# Fetch all repositories in parallel
+mgit exec -- fetch --all -j16
+
+# Commit all changes
 mgit commit -m "Update dependencies" --add --push
 ```
-
-**That's it!** You're now running git operations across all repos in parallel.
 
 ---
 
 ## Performance
 
-**With 50 repositories:**
+**With 50 repositories on an 8-core machine:**
 
 | Command | Sequential | Parallel (-j8) | Speedup |
 |---------|------------|----------------|---------|
@@ -70,77 +92,62 @@ mgit commit -m "Update dependencies" --add --push
 
 ---
 
-## Installation Methods
-
-### Method 1: Debian Package (Recommended)
-
-```bash
-sudo dpkg -i mgit_1.1.0_all.deb
-mgit --help
-```
-
-### Method 2: Manual
-
-```bash
-sudo cp mgit /usr/local/bin/
-sudo chmod +x /usr/local/bin/mgit
-```
-
-### Method 3: User-Local (No sudo)
-
-```bash
-mkdir -p ~/.local/bin
-cp mgit ~/.local/bin/
-chmod +x ~/.local/bin/mgit
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-**Requirements:** Python 3.6+, Git 2.0+
-
----
-
 ## Usage
 
 ### Basic Commands
 
 ```bash
-# Status
+# Status - show repository status
 mgit status -j8                    # All repos
 mgit status --dirty -j8            # Only dirty repos
+mgit status --dirty --no-untracked -j8  # Ignore untracked
 
-# Log
+# Log - show commit history
 mgit log -n 5 --oneline -j12       # Last 5 commits
 mgit log --since="yesterday" -j8   # Recent commits
 
-# Diff
-mgit diff -j8                      # Show changes
+# Diff - show changes
+mgit diff -j8                      # Unstaged changes
+mgit diff --cached -j8             # Staged changes
 mgit diff origin/main -j12         # Compare with branch
 
-# Exec
+# Checkout - switch branches
+mgit checkout develop -j8          # Checkout branch
+mgit checkout v2.1.0 -j8          # Checkout tag
+
+# Exec - run any git command
 mgit exec -- fetch --all -j16      # Fetch all repos
 mgit exec -- branch -vv -j8        # Show branches
+mgit exec -- remote -v -j8         # Show remotes
 
-# Commit
+# Commit - multi-repo commit
 mgit commit -m "Fix bugs" --add --push
+mgit commit -m "Release v2.1.0" --add \
+  --link-file releases/v2.1.0.txt \
+  --meta-repo .releases
 ```
 
 ### Choosing -j Value
 
 ```bash
 < 20 repos:    mgit status -j4
-20-100 repos:  mgit status -j8
+20-100 repos:  mgit status -j8    # Good starting point
 100-200 repos: mgit status -j16
 200+ repos:    mgit status -j32
+
+# Auto-detect CPU cores
+mgit status -j$(nproc)
 ```
 
 ---
 
 ## Real-World Examples
 
-### Daily Workflow
+### Daily Development Workflow
 
 ```bash
 # Morning check
+cd ~/your-project
 mgit status --dirty -j8
 mgit log --since="yesterday" --oneline -j8
 
@@ -148,7 +155,7 @@ mgit log --since="yesterday" --oneline -j8
 mgit exec -- fetch origin -j16
 
 # End of day commit
-mgit commit -m "WIP: Feature" --add
+mgit commit -m "WIP: Feature implementation" --add
 ```
 
 ### AOSP Development
@@ -163,106 +170,88 @@ mgit status --dirty -j8
 mgit exec -- pull --rebase -j12
 
 # Create snapshot
-mgit commit -m "AOSP sync" --add \
-  --link-file snapshots/2026-01-10.txt
+mgit commit -m "AOSP sync $(date +%F)" --add \
+  --link-file snapshots/aosp-$(date +%F).txt
 ```
 
 ### Release Management
 
 ```bash
-# Create release
+# Create release with tracking
 mgit commit -m "Release v2.1.0" --add \
-  --link-file releases/v2.1.0.txt \
+  --link-file releases/v2.1.0-manifest.txt \
   --meta-repo .releases \
   --push
 
 # Tag all repos
-mgit exec -- tag -a v2.1.0 -m "Release" -j8
+mgit exec -- tag -a v2.1.0 -m "Release v2.1.0" -j8
 mgit exec -- push origin v2.1.0 -j16
-```
-
----
-
-## Advanced Features
-
-### Link Files - Track Multi-Repo Changes
-
-```bash
-mgit commit -m "Update HALs" --add \
-  --link-file changes/hal-update.txt
-
-# Creates: changes/hal-update.txt
-# frameworks/base a1b2c3d4...
-# vendor/hardware e5f6g7h8...
-```
-
-### Meta Repositories
-
-```bash
-mgit commit -m "Release v2.1.0" --add \
-  --link-file releases/v2.1.0.txt \
-  --meta-repo .releases
-
-# .releases/ is now a git repo tracking all releases
-```
-
-### Dry Run
-
-```bash
-mgit --dry-run commit -m "Test" --add --push
-# Shows what would happen without executing
-```
-
----
-
-## Command Reference
-
-### Global Flags
-
-```
--j, --jobs N        Number of parallel jobs (default: 4)
---skip-dir DIR      Skip directory (repeatable)
---dry-run           Preview without executing
--h, --help          Show help
-```
-
-### Commands
-
-```
-status              Show repository status
-  --dirty             Only dirty repos
-  --no-untracked      Ignore untracked files
-
-log [args]          Show commit logs
-diff [args]         Show differences  
-checkout REF        Checkout branch/tag/commit
-exec -- CMD         Run arbitrary git command
-
-commit              Commit to all dirty repos
-  -m MSG              Commit message (required)
-  --add               Stage all changes
-  --amend             Amend previous commit
-  --no-verify         Skip hooks
-  --push              Push after commit
-  --link-file FILE    Track changes
-  --meta-repo DIR     Meta repository
 ```
 
 ---
 
 ## Documentation
 
-Included in package:
+- **[QUICKSTART.md](QUICKSTART.md)** - 5-minute getting started guide
+- **Man page:** `man mgit` (after installation)
+- **Full documentation:** `/usr/share/doc/mgit/` (after installation)
 
-- **README.md** - This file
-- **QUICKREF.md** - Quick reference
-- **USAGE_EXAMPLES.md** - Real scenarios
-- **PARALLEL_PERFORMANCE.md** - Performance guide
-- **EDGE_CASES.md** - Edge case handling
+---
+
+## Command Reference
+
+### Global Options
+
+```
+-j, --jobs N        Number of parallel jobs (default: 4)
+--skip-dir DIR      Additional directory to skip (repeatable)
+--dry-run           Show what would be done without executing
+-h, --help          Show help message
+```
+
+### Commands
+
+```
+status              Show repository status
+  --dirty             Show only repositories with changes
+  --no-untracked      Don't consider untracked files as dirty
+
+log [args...]       Show commit logs (args passed to git log)
+diff [args...]      Show differences (args passed to git diff)
+checkout <ref>      Checkout a branch, tag, or commit
+exec -- <cmd>       Execute arbitrary git command
+
+commit              Commit changes in all dirty repositories
+  -m MSG              Commit message (required)
+  --add               Stage all changes before committing
+  --amend             Amend the previous commit
+  --no-verify         Bypass hooks
+  --push              Push after commit
+  --link-file PATH    Write repo→SHA mappings
+  --meta-repo DIR     Maintain meta repository
+```
+
+---
+
+## Tips & Tricks
+
+### Create Shell Aliases
+
+Add to `~/.bashrc`:
 
 ```bash
-man mgit
-ls /usr/share/doc/mgit/
+alias ms='mgit status --dirty -j8'
+alias mf='mgit exec -- fetch --all -j16'
+alias ml='mgit log -n 5 --oneline -j8'
+```
+
+### Find Optimal -j Value
+
+```bash
+for j in 1 4 8 16; do
+  echo "Testing -j$j:"
+  time mgit status --dirty -j$j
+done
 ```
 
 ---
@@ -276,28 +265,25 @@ which mgit
 export PATH="/usr/local/bin:$PATH"
 ```
 
-### Performance not improving
-
-```bash
-# Benchmark
-for j in 1 4 8 16; do
-  time mgit status -j$j
-done
-```
-
-### No repos found
+### No repositories found
 
 ```bash
 pwd  # Check directory
 find . -name .git -type d
 ```
 
+### -j flag not recognized
+
+```bash
+mgit --help | grep jobs
+sudo dpkg -i mgit_1.1.0_all.deb  # Reinstall
+```
+
 ---
 
 ## Support
 
-- **GitHub:** https://github.com/vnesic/mgit
-- **Issues:** https://github.com/vnesic/mgit/issues  
+- **GitHub Issues:** https://github.com/vnesic/mgit/issues
 - **Email:** vladimirs.nesic@gmail.com
 
 ---
@@ -306,7 +292,7 @@ find . -name .git -type d
 
 MIT License - Copyright © 2026 Vladimir Nesic
 
-See LICENSE file for full text.
+See full license text in the repository.
 
 ---
 
@@ -314,10 +300,10 @@ See LICENSE file for full text.
 
 ### v1.1.0 (2026-01-10)
 
-- ✨ Parallel execution with `-j`
-- ⚡ 4-6x faster
+- ✨ Add parallel execution with `-j` flag
+- ⚡ 4-6x performance improvement
 - 📊 Progress indicators
-- 🔒 Thread-safe
+- 🔒 Thread-safe implementation
 
 ### v1.0.0 (2026-01-10)
 
@@ -325,9 +311,11 @@ See LICENSE file for full text.
 
 ---
 
-**Get started now:**
+**Get started:**
 
 ```bash
+git clone https://github.com/vnesic/mgit.git
+cd mgit
 sudo dpkg -i mgit_1.1.0_all.deb
 cd ~/your-project
 mgit status --dirty -j8
