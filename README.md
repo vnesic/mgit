@@ -202,6 +202,7 @@ mgit exec -- push origin v2.1.0 -j16
 - **[MULTI_COMMIT_GUIDE.md](MULTI_COMMIT_GUIDE.md)** - Complete multi-repository commit guide
 - **[CHAIN_COMMITS.md](CHAIN_COMMITS.md)** - Chain commits feature (NEW in v1.2.0)
 - **[INSTALL.md](INSTALL.md)** - Installation instructions
+- **[TESTING.md](TESTING.md)** - Test suite documentation
 - **Man page:** `man mgit` (after installation)
 - **Full documentation:** `/usr/share/doc/mgit/` (after installation)
 
