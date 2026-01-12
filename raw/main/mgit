@@ -396,9 +396,10 @@ class MGit:
         return 0
     
     def cmd_commit(self, message: str, add_all: bool = False, amend: bool = False,
-                   no_verify: bool = False, push: bool = False, 
+                   no_verify: bool = False, push: bool = False,
                    push_remote: Optional[str] = None, push_branch: Optional[str] = None,
-                   link_file: Optional[str] = None, meta_repo: Optional[str] = None) -> int:
+                   link_file: Optional[str] = None, meta_repo: Optional[str] = None,
+                   chain: bool = False) -> int:
         """Execute multi-repo commit operation (sequential for safety)."""
         if not self.repos:
             print("No Git repositories found.", file=sys.stderr)
@@ -420,11 +421,12 @@ class MGit:
         
         commit_results: Dict[str, str] = {}  # path -> sha
         failures = []
-        
+        previous_commit_info: Optional[Tuple[str, str, str]] = None  # (repo_path, sha, url)
+
         # Commit operations should be sequential for safety and clear output
         for repo in dirty_repos:
             print(f"project: {repo.relative_path}")
-            
+
             # Stage all changes if requested
             if add_all:
                 add_result = self.run_git_command(repo, ['add', '-A'])
@@ -432,31 +434,40 @@ class MGit:
                     print(f"  ERROR adding files: {add_result.error}", file=sys.stderr)
                     failures.append(repo.relative_path)
                     continue
-            
+
             # Check if there's anything to commit after staging
             status_check = self.run_git_command(repo, ['status', '--porcelain'])
             if not status_check.success:
                 print(f"  ERROR checking status: {status_check.error}", file=sys.stderr)
                 failures.append(repo.relative_path)
                 continue
-            
+
             # Parse staged changes
             has_staged_changes = any(
-                line and line[0] not in (' ', '?') 
+                line and line[0] not in (' ', '?')
                 for line in status_check.output.split('\n')
             )
-            
+
             if not has_staged_changes and not amend:
                 print("  (no staged changes, skipping)")
                 continue
-            
+
+            # Build commit message with chain info if enabled
+            commit_message = message
+            if chain and previous_commit_info:
+                prev_repo, prev_sha, prev_url = previous_commit_info
+                if prev_url:
+                    commit_message = f"{message}\n\nChained-From: {prev_repo} {prev_sha}\nCommit-URL: {prev_url}"
+                else:
+                    commit_message = f"{message}\n\nChained-From: {prev_repo} {prev_sha}"
+
             # Build commit command
-            commit_cmd = ['commit', '-m', message]
+            commit_cmd = ['commit', '-m', commit_message]
             if amend:
                 commit_cmd.append('--amend')
             if no_verify:
                 commit_cmd.append('--no-verify')
-            
+
             commit_result = self.run_git_command(repo, commit_cmd)
             
             if commit_result.success:
@@ -465,7 +476,31 @@ class MGit:
                 if sha_result.success:
                     commit_sha = sha_result.output.strip()
                     commit_results[repo.relative_path] = commit_sha
-                    print(f"  ✓ Committed: {commit_sha[:8]}")
+
+                    # Get commit URL if chaining
+                    commit_url = None
+                    if chain:
+                        commit_url = self._get_commit_url(repo, commit_sha)
+
+                    # Show commit info
+                    if chain:
+                        if len(commit_results) == 1:
+                            # First commit in chain
+                            if commit_url:
+                                print(f"  ✓ Committed: {commit_sha[:8]} (chain start)")
+                                print(f"    URL: {commit_url}")
+                            else:
+                                print(f"  ✓ Committed: {commit_sha[:8]} (chain start)")
+                        else:
+                            # Subsequent commit in chain
+                            prev_repo, prev_sha, prev_url = previous_commit_info
+                            print(f"  ✓ Committed: {commit_sha[:8]} (chained from {prev_repo})")
+                            if commit_url:
+                                print(f"    URL: {commit_url}")
+                        # Update chain info for next repo
+                        previous_commit_info = (repo.relative_path, commit_sha, commit_url or "")
+                    else:
+                        print(f"  ✓ Committed: {commit_sha[:8]}")
                 else:
                     print(f"  ✓ Committed (SHA unknown)")
             else:
@@ -504,6 +539,40 @@ class MGit:
         
         return 0
     
+    def _get_commit_url(self, repo: RepoInfo, commit_sha: str) -> Optional[str]:
+        """Generate commit URL from repository remote URL."""
+        try:
+            # Try to get the remote URL
+            result = self.run_git_command(repo, ['remote', 'get-url', 'origin'])
+            if not result.success or not result.output.strip():
+                return None
+
+            remote_url = result.output.strip()
+
+            # Handle different remote URL formats
+            # SSH format: git@github.com:user/repo.git
+            # HTTPS format: https://github.com/user/repo.git
+
+            if remote_url.startswith('git@'):
+                # Convert SSH to HTTPS format
+                # git@github.com:user/repo.git -> https://github.com/user/repo
+                parts = remote_url.replace(':', '/').replace('git@', 'https://')
+                remote_url = parts.rstrip('.git')
+            elif remote_url.startswith('https://') or remote_url.startswith('http://'):
+                # Already HTTPS, just remove .git
+                remote_url = remote_url.rstrip('.git')
+            else:
+                # Unknown format
+                return None
+
+            # Construct commit URL
+            # GitHub/GitLab/Bitbucket all use /commit/<sha>
+            commit_url = f"{remote_url}/commit/{commit_sha}"
+            return commit_url
+
+        except Exception:
+            return None
+
     def _write_link_file(self, link_file: str, commit_results: Dict[str, str]) -> None:
         """Write commit mapping to link file."""
         try:
@@ -568,11 +637,14 @@ Examples:
   mgit checkout develop               # Checkout 'develop' in all repos
   mgit exec -- fetch --all -j16       # Fetch all repos (16 parallel jobs)
   mgit commit -m "Fix" --add --push   # Commit and push all changes
-  
+
   # Advanced: Track multi-repo changes
   mgit commit -m "Update deps" --add \\
     --link-file changes.txt \\
     --meta-repo .meta-repo
+
+  # Chain commits: each commit references the previous
+  mgit commit -m "Update feature" --add --chain
 
 Performance Tips:
   - Use -j with number of CPU cores for best performance
@@ -629,6 +701,8 @@ Performance Tips:
     commit_parser.add_argument('--push-branch', help='Branch to push to (default: current)')
     commit_parser.add_argument('--link-file', help='Write repo->SHA mappings to file')
     commit_parser.add_argument('--meta-repo', help='Maintain a meta repo tracking the link file')
+    commit_parser.add_argument('--chain', action='store_true',
+                              help='Chain commits: each commit includes the previous repo\'s commit SHA')
     
     args = parser.parse_args()
     
@@ -681,7 +755,8 @@ Performance Tips:
                 push_remote=args.push_remote,
                 push_branch=args.push_branch,
                 link_file=args.link_file,
-                meta_repo=args.meta_repo
+                meta_repo=args.meta_repo,
+                chain=args.chain
             )
     except KeyboardInterrupt:
         print("\n\nInterrupted by user.", file=sys.stderr)
