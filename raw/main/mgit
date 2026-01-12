@@ -631,12 +631,12 @@ def main():
         epilog='''
 Examples:
   mgit status                          # Show status of all repos
-  mgit status --dirty -j8              # Show dirty repos using 8 parallel jobs
-  mgit log -n 5 --oneline -j10        # Show last 5 commits (10 parallel jobs)
-  mgit diff HEAD~1 -j12               # Show diff (12 parallel jobs)
-  mgit checkout develop               # Checkout 'develop' in all repos
-  mgit exec -- fetch --all -j16       # Fetch all repos (16 parallel jobs)
-  mgit commit -m "Fix" --add --push   # Commit and push all changes
+  mgit -j8 status --dirty              # Show dirty repos using 8 parallel jobs
+  mgit -j10 log -- -n 5 --oneline      # Show last 5 commits (10 parallel jobs)
+  mgit -j12 diff HEAD~1                # Show diff (12 parallel jobs)
+  mgit checkout develop                # Checkout 'develop' in all repos
+  mgit -j16 exec -- fetch --all        # Fetch all repos (16 parallel jobs)
+  mgit commit -m "Fix" --add --push    # Commit and push all changes
 
   # Advanced: Track multi-repo changes
   mgit commit -m "Update deps" --add \\

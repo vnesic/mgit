@@ -3,7 +3,7 @@
 **Parallel execution for multi-repo workflows. 4-6x faster than sequential operations.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/vnesic/mgit)
+[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](https://github.com/vnesic/mgit)
 
 Multi-repository Git operations tool with parallel execution support. Perfect for AOSP development, microservices, and managing multiple independent Git repositories.
 
@@ -17,8 +17,9 @@ Multi-repository Git operations tool with parallel execution support. Perfect fo
 
 - 🚀 **Parallel execution** - 4-6x faster with `-j` flag
 - 📦 **Multi-repo commits** - Same message across all repositories
+- 🔗 **Chain commits** - Daisy-chain commits with clickable URLs (NEW in v1.2.0)
 - 🔍 **Smart discovery** - Automatic Git repository detection
-- 🔗 **Change tracking** - Link files for reproducible builds
+- 📝 **Change tracking** - Link files for reproducible builds
 - 🛡️ **Thread-safe** - Proper locking and grouped output
 - ⚡ **Zero dependencies** - Just Python 3.6+ and Git
 
@@ -36,7 +37,7 @@ git clone https://github.com/vnesic/mgit.git
 cd mgit
 
 # Install the Debian package
-sudo dpkg -i mgit_1.1.0_all.deb
+sudo dpkg -i mgit_1.2.0_all.deb
 
 # Verify installation
 mgit --help
@@ -46,17 +47,17 @@ mgit --help
 
 ```bash
 # Download the package directly
-wget https://github.com/vnesic/mgit/blob/main/raw/main/mgit_1.1.0_all.deb 
+wget https://github.com/vnesic/mgit/raw/main/mgit_1.2.0_all.deb
 
 # Install
-sudo dpkg -i mgit_1.1.0_all.deb
+sudo dpkg -i mgit_1.2.0_all.deb
 ```
 
 **Option 3: Manual installation (script only)**
 
 ```bash
 # Download just the script
-wget https://github.com/vnesic/mgit/blob/main/raw/main/mgit_1.1.0_all.deb
+wget https://github.com/vnesic/mgit/raw/main/raw/main/mgit
 sudo cp mgit /usr/local/bin/
 sudo chmod +x /usr/local/bin/mgit
 ```
@@ -75,6 +76,9 @@ mgit exec -- fetch --all -j16
 
 # Commit all changes
 mgit commit -m "Update dependencies" --add --push
+
+# NEW: Chain commits with URLs (v1.2.0)
+mgit commit -m "Implement feature X" --add --chain
 ```
 
 ---
@@ -103,8 +107,8 @@ mgit status --dirty -j8            # Only dirty repos
 mgit status --dirty --no-untracked -j8  # Ignore untracked
 
 # Log - show commit history
-mgit log -n 5 --oneline -j12       # Last 5 commits
-mgit log --since="yesterday" -j8   # Recent commits
+mgit -j12 log -- -n 5 --oneline    # Last 5 commits
+mgit -j8 log --since="yesterday"   # Recent commits
 
 # Diff - show changes
 mgit diff -j8                      # Unstaged changes
@@ -149,7 +153,7 @@ mgit status -j$(nproc)
 # Morning check
 cd ~/your-project
 mgit status --dirty -j8
-mgit log --since="yesterday" --oneline -j8
+mgit -j8 log --since="yesterday" --oneline
 
 # Fetch updates
 mgit exec -- fetch origin -j16
@@ -193,6 +197,11 @@ mgit exec -- push origin v2.1.0 -j16
 ## Documentation
 
 - **[QUICKSTART.md](QUICKSTART.md)** - 5-minute getting started guide
+- **[CHEATSHEET.md](CHEATSHEET.md)** - Quick reference for all commands
+- **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** - Common issues and solutions
+- **[MULTI_COMMIT_GUIDE.md](MULTI_COMMIT_GUIDE.md)** - Complete multi-repository commit guide
+- **[CHAIN_COMMITS.md](CHAIN_COMMITS.md)** - Chain commits feature (NEW in v1.2.0)
+- **[INSTALL.md](INSTALL.md)** - Installation instructions
 - **Man page:** `man mgit` (after installation)
 - **Full documentation:** `/usr/share/doc/mgit/` (after installation)
 
@@ -242,7 +251,7 @@ Add to `~/.bashrc`:
 ```bash
 alias ms='mgit status --dirty -j8'
 alias mf='mgit exec -- fetch --all -j16'
-alias ml='mgit log -n 5 --oneline -j8'
+alias ml='mgit -j8 log -- -n 5 --oneline'
 ```
 
 ### Find Optimal -j Value
